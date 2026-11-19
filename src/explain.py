@@ -6,9 +6,10 @@ from src.config import HIGH_MATCH, MEDIUM_MATCH
 CRITERION_LABELS = {
     "description": "l'ambiance recherchée",
     "notes": "les notes olfactives",
-    "occasion": "l'occasion d'usage",
+    "occasion": "la saison et le moment",
     "family": "la famille olfactive",
 }
+GENDER_FR = {"female": "féminin", "male": "masculin", "unisex": "mixte"}
 
 
 def level(score: float) -> str:
@@ -22,8 +23,9 @@ def level(score: float) -> str:
 def explain_perfume(row: pd.Series) -> str:
     """Explication en Markdown d'un parfum recommandé."""
     lines = [
-        f"**{row['Name']}** ({row['Brand']}) · famille {row['Family']} · {row['PriceRange']} · "
-        f"intensité {row['Intensity']}/5",
+        f"**[{row['Name']}]({row['URL']})** ({row['Brand']}) · {row['Family']} ({row['SubFamily']}) · "
+        f"{GENDER_FR.get(row['Gender'], row['Gender'])} · intensité {row['Intensity']}/5 · "
+        f"note Fragrantica {row['Rating']:.1f}/5",
         f"Score {row['score']:.2f} (affinité sémantique {row['affinity']:.2f}, "
         f"couverture de vos critères {row['coverage']:.0%}).",
     ]

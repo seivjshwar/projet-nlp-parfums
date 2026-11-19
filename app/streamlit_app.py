@@ -17,7 +17,7 @@ from src.config import RESPONSES_DIR
 from src.embeddings import get_embedder
 from src.explain import explain_perfume
 from src.preprocessing import split_sentences
-from src.recommender import load_reference, recommend
+from src.recommender import frequent_notes, load_reference, recommend
 from src.scoring import UserProfile
 
 st.set_page_config(page_title="Recommandation de parfums", page_icon="🌸", layout="wide")
@@ -26,8 +26,7 @@ st.caption("Prototype pédagogique d'analyse sémantique : les recommandations r
            "entre vos réponses et les descriptions des parfums.")
 
 perfumes, families = load_reference()
-all_notes = sorted({n.strip() for col in ("TopNotes", "HeartNotes", "BaseNotes")
-                    for cell in perfumes[col] for n in cell.split(";") if n.strip()})
+all_notes = frequent_notes(perfumes)
 
 
 @st.cache_resource
@@ -48,7 +47,7 @@ with st.form("questionnaire"):
     )
     q_occasion = st.text_area(
         "Dans quel contexte allez-vous le porter ?",
-        placeholder="Ex. : au bureau au quotidien, plutôt au printemps.",
+        placeholder="Ex. : en journée au bureau, plutôt au printemps et en été.",
     )
 
     st.subheader("2. Vos familles olfactives (1 = je n'aime pas, 5 = j'adore)")
@@ -58,10 +57,11 @@ with st.form("questionnaire"):
     st.subheader("3. Questions guidées")
     c1, c2, c3 = st.columns(3)
     seasons = c1.multiselect("Saison(s)", ["printemps", "été", "automne", "hiver"])
-    intensity = c2.select_slider("Intensité / sillage souhaité", options=[1, 2, 3, 4, 5], value=3)
-    budget = c3.radio("Budget maximum", ["€", "€€", "€€€"], index=2, horizontal=True,
-                      help="€ < 60 €, €€ 60–120 €, €€€ > 120 €")
-    avoided = st.multiselect("Notes à éviter", all_notes)
+    moment = c1.radio("Moment", ["jour", "soir", "les deux"], index=2, horizontal=True)
+    intensity = c2.select_slider("Intensité / sillage souhaité", options=[1, 2, 3, 4, 5], value=3,
+                                 help="Relative au catalogue : 1 = très discret, 5 = très puissant")
+    gender = c3.radio("Pour qui ?", ["Peu importe", "Plutôt féminin", "Plutôt masculin"], horizontal=False)
+    avoided = st.multiselect("Notes à éviter (cases à cocher)", all_notes)
 
     submitted = st.form_submit_button("Trouver mes parfums")
 
@@ -69,7 +69,11 @@ if not submitted:
     st.stop()
 
 # Les réponses guidées sont converties en phrases pour enrichir le contexte
-occasion_text = q_occasion + (f" Plutôt en {', '.join(seasons)}." if seasons else "")
+occasion_text = q_occasion
+if seasons:
+    occasion_text += f" Plutôt en {', '.join(seasons)}."
+if moment != "les deux":
+    occasion_text += " Plutôt en journée." if moment == "jour" else " Plutôt le soir."
 profile = UserProfile(
     texts={
         "description": split_sentences(q_desc),
@@ -78,7 +82,7 @@ profile = UserProfile(
     },
     family_likert=likert,
     intensity=intensity,
-    max_price=budget,
+    gender={"Plutôt féminin": "female", "Plutôt masculin": "male"}.get(gender),
     avoided_notes=avoided,
 )
 if not profile.all_sentences():
@@ -90,7 +94,8 @@ RESPONSES_DIR.mkdir(parents=True, exist_ok=True)
 stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 (RESPONSES_DIR / f"response_{stamp}.json").write_text(json.dumps({
     "description": q_desc, "notes": q_notes, "occasion": q_occasion, "seasons": seasons,
-    "likert": likert, "intensity": intensity, "budget": budget, "avoided_notes": avoided,
+    "moment": moment, "likert": likert, "intensity": intensity, "gender": gender,
+    "avoided_notes": avoided,
 }, ensure_ascii=False, indent=2), encoding="utf-8")
 
 # -------------------------------------------------------------------- Analyse
@@ -98,9 +103,6 @@ with st.spinner("Analyse sémantique en cours…"):
     top, result = recommend(profile, embedder())
 
 # ------------------------------------------------------------------- Résultats
-if result.budget_relaxed:
-    st.info("Trop peu de parfums dans votre budget : le filtre budget a été assoupli.")
-
 col1, col2 = st.columns(2)
 with col1:
     st.subheader("Votre profil olfactif")
@@ -123,8 +125,11 @@ for _, row in top.iterrows():
 with st.expander("Classement complet"):
     st.dataframe(result.ranking.drop(columns=[c for c in result.ranking.columns if c.startswith("best_")]))
 
-with st.expander("Carte de similarité : vos phrases × parfums"):
-    crit = st.selectbox("Critère", list(result.criterion_sims))
-    sim = result.criterion_sims[crit]
-    st.plotly_chart(px.imshow(sim, x=perfumes["Name"], y=profile.texts[crit],
-                              color_continuous_scale="Purples", aspect="auto"), use_container_width=True)
+with st.expander("Carte de similarité : vos phrases × 10 meilleurs parfums"):
+    top10 = result.ranking.head(10)["PerfumeID"]
+    cols = perfumes.index[perfumes["PerfumeID"].isin(top10)]
+    for crit, sim in result.criterion_sims.items():
+        st.markdown(f"**Critère : {crit}**")
+        st.plotly_chart(px.imshow(sim[:, cols], x=perfumes.loc[cols, "Name"], y=profile.texts[crit],
+                                  color_continuous_scale="Purples", aspect="auto", zmin=0, zmax=1),
+                        use_container_width=True)

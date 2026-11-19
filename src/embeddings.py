@@ -14,15 +14,28 @@ class Embedder(Protocol):
 
 
 class SbertEmbedder:
-    """Wrapper autour de sentence-transformers, embeddings normalisés L2."""
+    """Wrapper autour de sentence-transformers, embeddings normalisés L2.
+
+    Les textes du référentiel (300 parfums × 3 critères) sont identiques à
+    chaque requête : on garde leurs embeddings en cache pour ne les calculer
+    qu'une fois. Seules les phrases de l'utilisateur sont encodées à chaque fois.
+    """
 
     def __init__(self, model_name: str = EMBEDDING_MODEL):
         from sentence_transformers import SentenceTransformer  # import tardif
 
         self.model = SentenceTransformer(model_name)
+        self._cache: dict[tuple[str, ...], np.ndarray] = {}
 
     def encode(self, texts: list[str]) -> np.ndarray:
-        return self.model.encode(texts, normalize_embeddings=True, convert_to_numpy=True)
+        key = tuple(texts)
+        if key not in self._cache:
+            emb = self.model.encode(texts, normalize_embeddings=True, convert_to_numpy=True,
+                                    batch_size=64, show_progress_bar=False)
+            if len(texts) > 20:          # ne met en cache que les gros lots (référentiel)
+                self._cache[key] = emb
+            return emb
+        return self._cache[key]
 
 
 @lru_cache(maxsize=2)

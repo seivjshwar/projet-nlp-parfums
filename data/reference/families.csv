@@ -1,9 +1,9 @@
-FamilyID,Family,Description
-F01,Floral,"Parfum de fleurs : rose, jasmin, fleur d'oranger, ylang-ylang, iris. Féminin, romantique, élégant et doux."
-F02,Boisé,"Notes de bois : santal, cèdre, vétiver, patchouli. Chaleureux, sec, naturel, élégant et rassurant."
-F03,Frais,"Agrumes, notes vertes et marines : bergamote, citron, pamplemousse, sel marin. Léger, pétillant, propre, idéal en été."
-F04,Ambré,"Ambre, vanille, encens, épices et résines. Chaud, sensuel, enveloppant, mystérieux, pour le soir et l'hiver."
-F05,Gourmand,"Notes sucrées et comestibles : vanille, praliné, caramel, café, chocolat. Réconfortant, addictif, joyeux."
-F06,Aromatique,"Lavande, sauge, romarin, poivre et herbes aromatiques. Frais, énergique, viril, classique fougère."
-F07,Chypré,"Accord bergamote, mousse de chêne et patchouli. Sophistiqué, chic, affirmé, contrasté."
-F08,Musqué,"Muscs blancs et notes poudrées. Effet peau propre, linge frais, doux, discret et intime."
+FamilyID,Family,FragranticaFamilies,Description
+F01,Floral,"Floral; Floral Fruity; Floral Woody Musk; Floral Aldehyde; Floral Green; Floral Aquatic","Parfum de fleurs : rose, jasmin, fleur d'oranger, pivoine, iris, muguet. Féminin, romantique, doux, lumineux et élégant. Floral, flowery, romantic."
+F02,Ambré,"Oriental; Oriental Floral; Oriental Woody; Oriental Spicy; Oriental Fougere","Ambre, encens, épices chaudes, résines et oud. Chaud, sensuel, enveloppant, mystérieux, intense, pour le soir et l'hiver. Oriental, amber, warm spicy."
+F03,Gourmand,"Oriental Vanilla; Floral Fruity Gourmand; Citrus Gourmand","Notes sucrées et comestibles : vanille, praliné, caramel, café, chocolat, miel. Réconfortant, addictif, régressif, joyeux. Sweet, gourmand, vanilla."
+F04,Boisé,"Woody; Woody Aromatic; Woody Spicy; Woody Floral Musk; Woody Aquatic","Notes de bois : santal, cèdre, vétiver, patchouli. Chaleureux, sec, naturel, terreux, élégant et rassurant. Woody, earthy."
+F05,Aromatique,"Aromatic; Aromatic Fougere; Aromatic Aquatic; Aromatic Spicy; Aromatic Green; Aromatic Fruity","Lavande, sauge, romarin, menthe, poivre et notes marines. Frais, énergique, propre, sportif, classique fougère. Aromatic, fresh, fougere, aquatic."
+F06,Chypré,"Chypre; Chypre Floral; Chypre Fruity; Woody Chypre","Accord bergamote, mousse de chêne et patchouli. Sophistiqué, chic, affirmé, contrasté, rétro. Chypre, mossy."
+F07,Hespéridé,"Citrus; Citrus Aromatic","Agrumes : bergamote, citron, mandarine, pamplemousse, néroli. Léger, pétillant, vivifiant, idéal en été et en journée. Citrus, fresh, zesty."
+F08,Cuir,"Leather","Cuir, tabac, bouleau fumé, notes animales. Sombre, fumé, puissant, viril, audacieux. Leather, smoky, tobacco."

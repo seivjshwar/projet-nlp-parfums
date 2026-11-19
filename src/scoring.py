@@ -11,8 +11,7 @@ Affinité famille :
 Score d'affinité sémantique (moyenne pondérée sur les critères renseignés) :
     Affinité(p) = Σ_a W_a · S_a(p) / Σ_a W_a
 
-Score final = Affinité(p) × facteur de contraintes (intensité, notes à éviter),
-après filtrage par budget.
+Score final = Affinité(p) × facteur de contraintes (intensité, notes à éviter, genre).
 
 Score de couverture des préférences = part pondérée des critères pour
 lesquels S_a(p) ≥ MEDIUM_MATCH (« ce parfum couvre 3 de vos 4 critères »).
@@ -34,7 +33,7 @@ class UserProfile:
     texts: dict[str, list[str]]                       # critère -> phrases
     family_likert: dict[str, int] = field(default_factory=dict)   # famille -> 1..5
     intensity: int | None = None                      # 1..5
-    max_price: str | None = None                      # "€", "€€", "€€€"
+    gender: str | None = None                         # "female", "male" ou None (peu importe)
     avoided_notes: list[str] = field(default_factory=list)
 
     def all_sentences(self) -> list[str]:
@@ -46,22 +45,27 @@ class ScoringResult:
     ranking: pd.DataFrame                  # un parfum par ligne, trié
     family_affinity: dict[str, float]
     criterion_sims: dict[str, np.ndarray] = field(repr=False)  # critère -> (phrases, parfums)
-    budget_relaxed: bool = False
 
 
 # --------------------------------------------------------------- Textes parfums
+def _join(cell: str) -> str:
+    return str(cell).replace(";", ",") if isinstance(cell, str) else ""
+
+
 def perfume_texts(perfumes: pd.DataFrame) -> dict[str, list[str]]:
     """Construit, pour chaque critère, le texte encodé de chaque parfum."""
-    notes = (
-        "Notes de tête : " + perfumes["TopNotes"] + ". Notes de cœur : " + perfumes["HeartNotes"]
-        + ". Notes de fond : " + perfumes["BaseNotes"] + "."
-    ).str.replace(";", ",")
-    return {
-        "description": (perfumes["Description"] + " " + perfumes["Keywords"].str.replace(";", ",")).tolist(),
-        "notes": notes.tolist(),
-        "occasion": ("Pour : " + perfumes["Occasion"] + ". Saison : " + perfumes["Season"] + ".")
-        .str.replace(";", ",").tolist(),
-    }
+    notes = [
+        f"Main accords: {_join(r.Accords)}. Top notes: {_join(r.TopNotes)}. "
+        f"Heart notes: {_join(r.HeartNotes)}. Base notes: {_join(r.BaseNotes)}."
+        for r in perfumes.itertuples()
+    ]
+    moments = {"day": "during the day", "night": "in the evening and at night"}
+    occasion = [
+        f"Best worn in {_join(r.Seasons).replace(',', ' and') or 'any season'}, "
+        f"{' and '.join(moments[m.strip()] for m in str(r.Moment).split(';') if m.strip() in moments) or 'day or night'}."
+        for r in perfumes.itertuples()
+    ]
+    return {"description": perfumes["Description"].tolist(), "notes": notes, "occasion": occasion}
 
 
 # ------------------------------------------------------------- Étapes du score
@@ -74,7 +78,7 @@ def family_affinity(profile: UserProfile, families: pd.DataFrame, embedder: Embe
     for fam, sem in zip(families["Family"], semantic):
         if fam in profile.family_likert:
             self_eval = (profile.family_likert[fam] - 1) / 4
-            result[fam] = (1 - config.LIKERT_WEIGHT) * sem + config.LIKERT_WEIGHT * self_eval
+            result[fam] = float((1 - config.LIKERT_WEIGHT) * sem + config.LIKERT_WEIGHT * self_eval)
         else:
             result[fam] = float(sem)
     return result
@@ -88,11 +92,14 @@ def constraint_factor(row: pd.Series, profile: UserProfile) -> tuple[float, list
         factor -= config.INTENSITY_PENALTY * gap
         if gap >= 2:
             reasons.append(f"intensité {row['Intensity']}/5 éloignée de votre souhait ({profile.intensity}/5)")
-    all_notes = " ".join([row["TopNotes"], row["HeartNotes"], row["BaseNotes"]]).lower()
+    all_notes = " ".join(str(row[c]) for c in ("TopNotes", "HeartNotes", "BaseNotes")).lower()
     for note in profile.avoided_notes:
         if note.lower() in all_notes:
             factor -= config.AVOIDED_NOTE_PENALTY
             reasons.append(f"contient {note}, que vous souhaitez éviter")
+    if profile.gender and row["Gender"] not in ("unisex", profile.gender):
+        factor -= config.GENDER_PENALTY
+        reasons.append("pensé pour " + ("les hommes" if row["Gender"] == "male" else "les femmes"))
     return max(factor, 0.0), reasons
 
 
@@ -124,7 +131,8 @@ def run_scoring(
     weights = {c: config.CRITERIA_WEIGHTS[c] for c in scores}
     w_sum = sum(weights.values())
 
-    ranking = perfumes[["PerfumeID", "Name", "Brand", "Family", "Intensity", "PriceRange"]].copy()
+    ranking = perfumes[["PerfumeID", "Name", "Brand", "Family", "SubFamily", "Gender",
+                        "Intensity", "Rating", "URL"]].copy()
     for crit, s in scores.items():
         ranking[f"S_{crit}"] = s
     ranking["affinity"] = sum(weights[c] * scores[c] for c in scores) / w_sum
@@ -137,15 +145,5 @@ def run_scoring(
     for crit, sents in best_sentence.items():
         ranking[f"best_{crit}"] = sents
 
-    # Filtre dur : budget (relâché s'il ne reste pas assez de parfums)
-    budget_relaxed = False
-    if profile.max_price:
-        max_level = config.PRICE_ORDER[profile.max_price]
-        within = ranking["PriceRange"].map(config.PRICE_ORDER) <= max_level
-        if within.sum() >= config.TOP_K:
-            ranking = ranking[within]
-        else:
-            budget_relaxed = True
-
     ranking = ranking.sort_values("score", ascending=False).reset_index(drop=True)
-    return ScoringResult(ranking, fam_aff, criterion_sims, budget_relaxed)
+    return ScoringResult(ranking, fam_aff, criterion_sims)

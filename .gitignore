@@ -10,6 +10,9 @@ env/
 # Jupyter
 .ipynb_checkpoints/
 
+# Données brutes téléchargées (Kaggle, ~140 Mo) : à placer dans data/raw/
+data/raw/
+
 # Données collectées (personnelles)
 data/responses/*
 !data/responses/.gitkeep
