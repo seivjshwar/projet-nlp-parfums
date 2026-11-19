@@ -1,0 +1,12 @@
+sentence-transformers>=3.0
+numpy>=1.26
+pandas>=2.1
+scikit-learn>=1.4
+streamlit>=1.38
+plotly>=5.20
+nltk>=3.8
+pytest>=8.0
+# Optionnel (bonus IA générative) :
+# google-generativeai
+# ollama
+# faiss-cpu
