@@ -32,3 +32,5 @@ Thumbs.db
 
 # Streamlit
 .streamlit/secrets.toml
+data/embeddings.npz
+data/embeddings.npz
