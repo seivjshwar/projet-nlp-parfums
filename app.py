@@ -1,7 +1,7 @@
 """
 Interface Streamlit - Recommandation de parfums
 Lancer depuis la racine du projet :  streamlit run app.py
-Dépendances :  pip install streamlit plotly
+Dépendances :  pip install streamlit plotly pandas
 
 Contrat d'interface :
   - app.py produit `user_input` (Format 1) -> lu par nlp_engine.py / scoring.py
@@ -10,17 +10,8 @@ Contrat d'interface :
 import os
 import random
 
+import pandas as pd
 import streamlit as st
-
-# ----------------------------------------------------------------------
-# BRANCHEMENT DES MODULES DU GROUPE  (adapter les noms ici si besoin)
-# ----------------------------------------------------------------------
-try:
-    # HYPOTHESE : src/scoring.py expose  get_recommendations(user_input) -> results
-    from src.scoring import get_recommendations
-    SCORING_DISPONIBLE = True
-except ImportError:
-    SCORING_DISPONIBLE = False
 
 from src.visualizations import plot_family_radar, plot_top3_breakdown
 
@@ -32,10 +23,117 @@ FAMILLES = [
     "Fruity", "Amber & Spicy", "Sweet & Gourmand", "Leather & Powdery",
 ]
 GENRES = {"Tous": "all", "Femme": "female", "Homme": "male", "Unisexe": "unisex"}
-# A VERIFIER avec le groupe : la 3e tranche est une hypothèse
 BUDGETS = ["€ (< 60€)", "€€ (60-150€)", "€€€ (> 150€)"]
 MOMENTS = ["Day", "Evening / Night", "Day & Night"]
 SAISONS = ["Spring", "Summer", "Autumn", "Winter"]
+
+# ----------------------------------------------------------------------
+# BRANCHEMENT DES MODULES DU GROUPE
+# ----------------------------------------------------------------------
+try:
+    from src.nlp_engine import get_catalogue
+    from src.recommender import recommend
+    PIPELINE_DISPONIBLE = True
+except ImportError:
+    PIPELINE_DISPONIBLE = False
+
+
+def _split_notes(row: pd.Series) -> tuple[str, str, str]:
+    """Extrait Tête / Cœur / Fond depuis OlfactoryNotes si les colonnes séparées n'existent pas."""
+    top = str(row.get("TopNotes") or "").strip()
+    heart = str(row.get("HeartNotes") or row.get("MiddleNotes") or "").strip()
+    base = str(row.get("BaseNotes") or "").strip()
+    if any((top, heart, base)):
+        return top or "—", heart or "—", base or "—"
+
+    raw = str(row.get("OlfactoryNotes") or "")
+    parts = [p.strip() for p in raw.split("|")]
+    return (
+        parts[0] if len(parts) > 0 and parts[0] else "—",
+        parts[1] if len(parts) > 1 and parts[1] else "—",
+        parts[2] if len(parts) > 2 and parts[2] else "—",
+    )
+
+
+def adapter_resultats_app(raw_res: dict, catalogue: pd.DataFrame) -> dict:
+    """Convertit la sortie de src.recommender.recommend() vers le format attendu par app.py."""
+    fam_scaled = raw_res.get("family_similarities_scaled") or {}
+    fam_raw = raw_res.get("family_scores") or {}
+    family_scores = {
+        f: (0.0 if pd.isna(fam_scaled.get(f)) else float(fam_scaled[f]))
+        for f in FAMILLES
+    }
+    if all(v == 0.0 for v in family_scores.values()) and fam_raw:
+        family_scores = {
+            f: (0.0 if pd.isna(fam_raw.get(f)) else float(fam_raw[f]))
+            for f in FAMILLES
+        }
+
+    catalogue_reset = catalogue.reset_index(drop=True)
+    id_to_row = {
+        str(pid): row
+        for pid, row in zip(catalogue_reset["PerfumeID"].astype(str), catalogue_reset.itertuples(index=False))
+    }
+
+    top_3 = []
+    for rec in raw_res.get("recommendations", [])[:3]:
+        pid = str(rec.get("perfume_id") or "")
+        if pid in id_to_row:
+            row = pd.Series(id_to_row[pid]._asdict())
+        elif "_index" in rec and 0 <= int(rec["_index"]) < len(catalogue_reset):
+            row = catalogue_reset.iloc[int(rec["_index"])]
+        else:
+            row = pd.Series(dtype=object)
+
+        top_notes, heart_notes, base_notes = _split_notes(row)
+        contrib = rec.get("contributions", {})
+
+        breakdown = {
+            "semantic": round(float(contrib.get("profile", 0.0) + contrib.get("description", 0.0)) / 100.0, 3),
+            "family": round(float(contrib.get("family", 0.0)) / 100.0, 3),
+            "occasion": round(float(contrib.get("occasion", 0.0) + contrib.get("context", 0.0)) / 100.0, 3),
+            "intensity": round(
+                float(contrib.get("performance", 0.0) + contrib.get("gender", 0.0) + contrib.get("budget", 0.0)) / 100.0,
+                3,
+            ),
+        }
+
+        moment_txt = str(row.get("BestMoment") or "").strip()
+        seasons_txt = str(row.get("BestSeasons") or "").strip()
+        occasion_label = (
+            f"{moment_txt} ({seasons_txt})" if moment_txt and seasons_txt
+            else (moment_txt or seasons_txt or "—")
+        )
+
+        longevity_val = row.get("Longevity")
+        sillage_val = row.get("Sillage")
+        rating_val = row.get("Rating")
+
+        top_3.append({
+            "PerfumeID": pid,
+            "Name": rec.get("name") or str(row.get("Name") or ""),
+            "Brand": rec.get("brand") or str(row.get("Brand") or ""),
+            "Family": rec.get("family") or str(row.get("Family") or ""),
+            "Budget": str(row.get("Budget") or "—"),
+            "TopNotes": top_notes,
+            "HeartNotes": heart_notes,
+            "BaseNotes": base_notes,
+            "Occasion": occasion_label,
+            "Longevity": round(float(longevity_val), 1) if pd.notna(longevity_val) else "—",
+            "Sillage": round(float(sillage_val), 1) if pd.notna(sillage_val) else "—",
+            "Rating": round(float(rating_val), 2) if pd.notna(rating_val) else "—",
+            "final_score": float(rec.get("score", 0.0)) / 100.0,
+            "breakdown": breakdown,
+            "explanation": rec.get("explanation") or f"Score relatif : {rec.get('score', 0):.1f}/100.",
+        })
+
+    return {"family_scores": family_scores, "top_3": top_3}
+
+
+def executer_pipeline(user_input: dict) -> dict:
+    catalogue, _ = get_catalogue()
+    raw_res = recommend(user_input, top_k=3, catalogue=catalogue)
+    return adapter_resultats_app(raw_res, catalogue)
 
 # ----------------------------------------------------------------------
 # Thème : crème, café, caramel
@@ -194,7 +292,7 @@ def verifier_theme():
 
 
 # ----------------------------------------------------------------------
-# Fallback : résultats factices si scoring.py n'est pas encore là
+# Fallback : résultats factices si le pipeline n'est pas disponible
 # ----------------------------------------------------------------------
 def mock_recommendations(user_input: dict) -> dict:
     rnd = random.Random(str(user_input))
@@ -216,7 +314,7 @@ def mock_recommendations(user_input: dict) -> dict:
             "Longevity": round(rnd.uniform(2, 5), 1), "Sillage": round(rnd.uniform(1, 4), 1),
             "Rating": round(rnd.uniform(3.8, 4.6), 2), "final_score": score,
             "breakdown": b,
-            "explanation": f"Recommandé à {score:.0%} : (données factices, scoring.py non branché).",
+            "explanation": f"Recommandé à {score:.0%} : (données factices, pipeline non branché).",
         })
     top_3.sort(key=lambda p: p["final_score"], reverse=True)
     return {"family_scores": family_scores, "top_3": top_3}
@@ -246,6 +344,10 @@ def afficher_resultats(results: dict):
     st.divider()
     st.header("Vos recommandations")
 
+    if not results["top_3"]:
+        st.warning("Aucun parfum ne correspond à ces filtres. Élargissez le budget, les saisons ou le genre.")
+        return
+
     for i, p in enumerate(results["top_3"], start=1):
         afficher_carte(i, p)
 
@@ -271,8 +373,8 @@ st.markdown('<div class="sous-titre">Décrivez le parfum idéal, nous trouvons l
 if os.path.exists("assets/banner.png"):
     st.image("assets/banner.png")
 
-if not SCORING_DISPONIBLE:
-    st.warning("`src/scoring.py` introuvable : résultats factices affichés pour tester l'interface.")
+if not PIPELINE_DISPONIBLE:
+    st.warning("`src/recommender.py` ou `src/nlp_engine.py` introuvable : résultats factices affichés.")
 
 with st.form("formulaire"):
     st.subheader("1. Dites-nous ce que vous cherchez")
@@ -318,9 +420,12 @@ if submit:
         st.error("Sélectionnez au moins un budget et une saison.")
     else:
         with st.spinner("Analyse en cours..."):
-            fn = get_recommendations if SCORING_DISPONIBLE else mock_recommendations
-            st.session_state["user_input"] = user_input
-            st.session_state["results"] = fn(user_input)  # --- Format 2 : results
+            fn = executer_pipeline if PIPELINE_DISPONIBLE else mock_recommendations
+            try:
+                st.session_state["user_input"] = user_input
+                st.session_state["results"] = fn(user_input)
+            except ValueError as exc:
+                st.error(f"Impossible de calculer les recommandations : {exc}")
 
 if "results" in st.session_state:
     afficher_resultats(st.session_state["results"])
