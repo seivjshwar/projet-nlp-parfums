@@ -234,6 +234,9 @@ def build_occasion_query(user_input: dict) -> str:
 
 
 # ----------------------------------------- 5. Similarités utilisateur × parfums
+PERFUME_SIM_COLUMNS = ["PerfumeID", "sim_profile", "sim_description", "sim_description_raw",
+                       "sim_occasion", "best_user_phrase", "best_perfume_phrase"]
+
 def compute_perfume_similarities(user_input: dict, df: pd.DataFrame, emb: dict) -> pd.DataFrame:
     """Similarités cosinus entre les réponses de l'utilisateur et chaque parfum.
 
@@ -291,24 +294,44 @@ def compute_perfume_similarities(user_input: dict, df: pd.DataFrame, emb: dict) 
     else:
         out["sim_occasion"] = np.nan
 
-    return out
+    # Ordre des colonnes figé : c'est le format promis au Membre 2
+    return out[PERFUME_SIM_COLUMNS]
 
 
 # ------------------------------------- 6. Similarités utilisateur × familles
-def compute_family_similarities(user_input: dict, emb: dict) -> dict:
-    """Similarité cosinus entre les réponses libres et chaque famille olfactive.
+FAMILY_TOP_K = 5   # nb de meilleurs parfums pris en compte par famille
 
-    Renvoie {famille: similarité} pour les 8 familles (pour le radar).
-    Pour chaque famille, on garde la meilleure phrase de l'utilisateur (max).
-    Renvoie des NaN si l'utilisateur n'a écrit aucun texte libre.
+
+def compute_family_similarities(user_input: dict, df: pd.DataFrame, emb: dict,
+                                perfume_sims: pd.DataFrame | None = None,
+                                method: str = "catalogue") -> dict:
+    """Similarité entre l'utilisateur et chacune des 8 familles olfactives (radar).
+
+    method="catalogue" (par défaut) : la famille est vue à travers ses parfums.
+        score = moyenne des FAMILY_TOP_K meilleurs sim_profile de la famille.
+        Cohérent avec les recommandations, et s'appuie sur ~25 parfums réels.
+    method="description" : comparaison directe avec FAMILY_DESCRIPTIONS
+        (une phrase rédigée par famille). Gardée pour comparaison : moins fiable.
+
+    perfume_sims : résultat de compute_perfume_similarities, pour ne pas le
+    recalculer s'il l'a déjà été. Renvoie {famille: score} ; NaN si pas de texte.
     """
     names = [str(n) for n in emb["family_names"]]
-    sentences = clean_user_text(_get(user_input, DESCRIPTION_KEYS)) \
-        + clean_user_text(_get(user_input, MOOD_KEYS))
-    if not sentences:
+
+    if method == "description":
+        sentences = clean_user_text(_get(user_input, DESCRIPTION_KEYS)) \
+            + clean_user_text(_get(user_input, MOOD_KEYS))
+        if not sentences:
+            return {n: float("nan") for n in names}
+        sims = (encode(sentences) @ emb["family"].T).max(axis=0)
+        return {n: float(v) for n, v in zip(names, sims)}
+
+    if perfume_sims is None:
+        perfume_sims = compute_perfume_similarities(user_input, df, emb)
+    profile = pd.Series(perfume_sims["sim_profile"].to_numpy(), index=df["Family"].to_numpy())
+    if profile.isna().all():
         return {n: float("nan") for n in names}
-    sims = (encode(sentences) @ emb["family"].T).max(axis=0)   # (8,)
-    return {n: float(v) for n, v in zip(names, sims)}
+    return {n: float(profile[profile.index == n].nlargest(FAMILY_TOP_K).mean()) for n in names}
 
 
 def family_label_agreement(df: pd.DataFrame, emb: dict) -> pd.DataFrame:
@@ -323,6 +346,54 @@ def family_label_agreement(df: pd.DataFrame, emb: dict) -> pd.DataFrame:
         "predicted_family": names[sims.argmax(axis=1)],
         "agree": df["Family"].to_numpy() == names[sims.argmax(axis=1)],
     })
+
+
+# ------------------------------------------- 7. Point d'entrée pour le scoring
+@lru_cache(maxsize=1)
+def get_catalogue() -> tuple:
+    """Charge le CSV, construit les textes et les embeddings UNE fois par session."""
+    df = build_perfume_texts(load_perfumes())
+    return df, load_or_build_embeddings(df)
+
+
+def rescale(values: dict) -> dict:
+    """Remet des scores à l'échelle 0–1 (meilleur = 1, moins bon = 0) pour l'affichage."""
+    v = pd.Series(values, dtype=float)
+    span = v.max() - v.min()
+    if v.isna().all() or span == 0:
+        return {k: float("nan") for k in values}
+    return ((v - v.min()) / span).round(4).to_dict()
+
+
+def analyze(user_input: dict) -> dict:
+    """Point d'entrée unique du moteur NLP (utilisé par scoring.py).
+
+    Entrée : user_input au format du contrat d'interface (produit par app.py).
+    Sortie : voir docs/nlp_engine.md
+        {
+          "perfume_similarities": DataFrame (200 lignes, ordre du CSV) :
+              PerfumeID, sim_profile, sim_description, sim_description_raw,
+              sim_occasion, best_user_phrase, best_perfume_phrase
+          "family_similarities": {famille: score brut}          (8 familles)
+          "family_similarities_scaled": {famille: score 0–1}    (pour le radar)
+          "user_sentences": phrases utilisateur analysées
+          "occasion_query": phrase construite à partir de moment + seasons
+          "model": nom du modèle SBERT
+        }
+    """
+    df, emb = get_catalogue()
+    perfume_sims = compute_perfume_similarities(user_input, df, emb)
+    family_sims = compute_family_similarities(user_input, df, emb, perfume_sims=perfume_sims)
+    has_occasion = bool(user_input.get("moment") or user_input.get("seasons"))
+    return {
+        "perfume_similarities": perfume_sims,
+        "family_similarities": family_sims,
+        "family_similarities_scaled": rescale(family_sims),
+        "user_sentences": clean_user_text(_get(user_input, DESCRIPTION_KEYS))
+                          + clean_user_text(_get(user_input, MOOD_KEYS)),
+        "occasion_query": build_occasion_query(user_input) if has_occasion else "",
+        "model": MODEL_NAME,
+    }
 
 
 # ------------------------------------------------------ Démonstration / contrôle
@@ -368,7 +439,7 @@ if __name__ == "__main__":
 
     # --- Étape 6 : familles
     print("\n=== Similarité par famille (radar) ===")
-    fam = compute_family_similarities(user_input, emb)
+    fam = compute_family_similarities(user_input, df, emb, perfume_sims=sims)
     for name, v in sorted(fam.items(), key=lambda kv: -kv[1]):
         print(f"  {name:18s} {v:.3f}  " + "█" * int(max(v, 0) * 40))
 
@@ -378,3 +449,10 @@ if __name__ == "__main__":
     print(pd.crosstab(agreement["Family"], agreement["predicted_family"]).to_string())
     print("\nExemples de désaccords :")
     print(agreement[~agreement["agree"]].head(8).to_string(index=False))
+
+    # --- Étape 7 : point d'entrée unique
+    print("\n=== analyze(user_input) : ce que reçoit le Membre 2 ===")
+    nlp = analyze(user_input)
+    for key, value in nlp.items():
+        kind = f"DataFrame {value.shape}" if isinstance(value, pd.DataFrame) else repr(value)[:90]
+        print(f"  {key:28s} {kind}")
